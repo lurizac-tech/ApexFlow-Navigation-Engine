@@ -302,14 +302,14 @@ function buildClinicCompositeTree() {
   const sedeCentro = new SedeNode('Sede Centro', { city: 'Bogotá', region: 'Norte' });
   const especialidadOrtodoncia = new EspecialidadNode('Ortodoncia', { priority: 'high' });
   const doctorAna = new DoctorNode('Dra. Ana Gómez', { rating: 4.9, specialty: 'Ortodoncia' });
-  doctorAna.add(new BloqueNode('Bloque A', { start: '09:00', end: '10:00', status: 'available' }));
-  doctorAna.add(new BloqueNode('Bloque B', { start: '10:30', end: '11:30', status: 'reserved' }));
+  doctorAna.add(new BloqueNode('Bloque A', { doctor: 'Dra. Ana Gómez', specialty: 'Ortodoncia', rating: 4.9, start: '09:00', end: '10:00', status: 'available' }));
+  doctorAna.add(new BloqueNode('Bloque B', { doctor: 'Dra. Ana Gómez', specialty: 'Ortodoncia', rating: 4.9, start: '10:30', end: '11:30', status: 'reserved' }));
   especialidadOrtodoncia.add(doctorAna);
 
   const especialidadImplantologia = new EspecialidadNode('Implantología', { priority: 'medium' });
   const doctorJavier = new DoctorNode('Dr. Javier Torres', { rating: 4.7, specialty: 'Implantología' });
-  doctorJavier.add(new BloqueNode('Bloque C', { start: '11:00', end: '12:00', status: 'available' }));
-  doctorJavier.add(new BloqueNode('Bloque D', { start: '12:30', end: '13:30', status: 'available' }));
+  doctorJavier.add(new BloqueNode('Bloque C', { doctor: 'Dr. Javier Torres', specialty: 'Implantología', rating: 4.7, start: '11:00', end: '12:00', status: 'available' }));
+  doctorJavier.add(new BloqueNode('Bloque D', { doctor: 'Dr. Javier Torres', specialty: 'Implantología', rating: 4.7, start: '12:30', end: '13:30', status: 'available' }));
   especialidadImplantologia.add(doctorJavier);
 
   sedeCentro.add(especialidadOrtodoncia);
@@ -318,7 +318,7 @@ function buildClinicCompositeTree() {
   const sedeSur = new SedeNode('Sede Sur', { city: 'Medellín', region: 'Sur' });
   const especialidadEndodoncia = new EspecialidadNode('Endodoncia', { priority: 'high' });
   const doctorSofia = new DoctorNode('Dra. Sofía Ramírez', { rating: 4.8, specialty: 'Endodoncia' });
-  doctorSofia.add(new BloqueNode('Bloque E', { start: '09:30', end: '10:30', status: 'available' }));
+  doctorSofia.add(new BloqueNode('Bloque E', { doctor: 'Dra. Sofía Ramírez', specialty: 'Endodoncia', rating: 4.8, start: '09:30', end: '10:30', status: 'available' }));
   especialidadEndodoncia.add(doctorSofia);
   sedeSur.add(especialidadEndodoncia);
 
@@ -331,6 +331,79 @@ function flattenClinicTree(root) {
     type: node.type,
     name: node.name,
     metadata: node.metadata
+  }));
+}
+
+function normalizeSedeName(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function toMinutes(value) {
+  if (!value) return Number.MAX_SAFE_INTEGER;
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return Number.MAX_SAFE_INTEGER;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function searchOptimizedBlocks({ sede, especialidad, estrategia }) {
+  const clinicTree = buildClinicCompositeTree();
+  const rootNodes = [clinicTree.sedeCentro, clinicTree.sedeSur];
+  const selectedSede = rootNodes.find((node) => normalizeSedeName(node.name) === normalizeSedeName(sede)) || rootNodes[0];
+  const iterator = new InMemoryIterator(selectedSede);
+  const blocks = iterator.toArray()
+    .filter((node) => node.type === 'bloque')
+    .map((node) => ({
+      id: node.name,
+      sede: selectedSede.name,
+      doctor: node.metadata.doctor || 'Doctor',
+      specialty: node.metadata.specialty || 'General',
+      rating: Number(node.metadata.rating || 4.5),
+      start: node.metadata.start || '09:00',
+      end: node.metadata.end || '10:00',
+      status: node.metadata.status || 'available',
+      location: selectedSede.metadata.city || selectedSede.metadata.region || 'Sede principal'
+    }))
+    .filter((block) => {
+      if (!especialidad) return true;
+      return String(block.specialty).toLowerCase().includes(String(especialidad).trim().toLowerCase());
+    });
+
+  const strategyName = String(estrategia || 'nearest').toLowerCase();
+  const strategyMap = {
+    nearest: new NearestAvailabilityStrategy(),
+    nearestavailability: new NearestAvailabilityStrategy(),
+    availability: new NearestAvailabilityStrategy(),
+    doctorrating: new DoctorRatingStrategy(),
+    'doctor-rating': new DoctorRatingStrategy(),
+    rating: new DoctorRatingStrategy()
+  };
+
+  const strategy = strategyMap[strategyName] || new NearestAvailabilityStrategy();
+  const candidateBlocks = blocks.map((block) => ({
+    ...block,
+    availableSlots: [block.start],
+    doctorName: block.doctor,
+    specialty: block.specialty,
+    rating: block.rating
+  }));
+
+  const ordered = strategy.sortCandidates(candidateBlocks, {
+    specialty: especialidad,
+    time: blocks[0]?.start || '09:00',
+    sede: selectedSede.name
+  });
+
+  return ordered.map((block) => ({
+    id: block.id,
+    sede: block.sede,
+    doctor: block.doctor,
+    specialty: block.specialty,
+    rating: block.rating,
+    start: block.start,
+    end: block.end,
+    status: block.status,
+    location: block.location
   }));
 }
 
@@ -751,26 +824,30 @@ app.get('/api/jobs', verificarJWT, (req, res) => {
 });
 
 app.post('/api/navigation/search', verificarJWT, (req, res) => {
-  const { doctors, specialty, date, time, strategy } = req.body || {};
-  const requestedStrategy = String(strategy || 'nearest').toLowerCase();
-  const candidateDoctors = Array.isArray(doctors) && doctors.length
-    ? doctors
-    : doctorCatalog.map((doctor) => ({ ...doctor, specialty: specialty || doctor.specialty, date, time }));
+  const startedAt = Date.now();
+  const { sede, especialidad, estrategia } = req.body || {};
+  const normalizedStrategy = String(estrategia || 'nearest').trim().toLowerCase();
+  const normalizedSpecialty = String(especialidad || '').trim();
+  const normalizedSede = String(sede || '').trim();
 
-  const results = searchDoctorsByStrategy(candidateDoctors, requestedStrategy, { specialty, date, time });
+  const blocks = searchOptimizedBlocks({
+    sede: normalizedSede,
+    especialidad: normalizedSpecialty,
+    estrategia: normalizedStrategy
+  });
+
+  const processingMs = Date.now() - startedAt;
 
   return res.json({
     ok: true,
-    strategy: requestedStrategy,
-    results: results.map((doctor) => ({
-      id: doctor.id,
-      doctor: doctor.doctor,
-      specialty: doctor.specialty,
-      rating: doctor.rating,
-      availableSlots: doctor.availableSlots,
-      nextAvailable: doctor.nextAvailable,
-      location: doctor.location
-    }))
+    strategy: normalizedStrategy,
+    sede: normalizedSede || 'Sede Centro',
+    especialidad: normalizedSpecialty || 'all',
+    processingMs,
+    thresholdMs: 85,
+    withinThreshold: processingMs < 85,
+    totalBlocks: blocks.length,
+    blocks
   });
 });
 
@@ -899,5 +976,6 @@ module.exports = {
   BloqueNode,
   InMemoryIterator,
   buildClinicCompositeTree,
-  flattenClinicTree
+  flattenClinicTree,
+  searchOptimizedBlocks
 };
