@@ -5,6 +5,105 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ApexFlow Distributed</title>
     <link rel="stylesheet" href="styles.css" />
+    <style>
+      .smart-search-panel {
+        margin-top: 24px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.86), rgba(233,242,255,0.92));
+        border: 1px solid rgba(52, 101, 184, 0.12);
+        border-radius: 20px;
+        box-shadow: 0 18px 42px rgba(19, 49, 94, 0.08);
+        padding: 18px;
+      }
+
+      .smart-search-controls,
+      .strategy-toggle,
+      .smart-search-summary {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+
+      .smart-search-controls {
+        margin-top: 18px;
+      }
+
+      .strategy-toggle {
+        margin: 18px 0 12px;
+      }
+
+      .strategy-option {
+        flex: 1 1 220px;
+        appearance: none;
+        border: 1px solid rgba(20, 80, 160, 0.22);
+        border-radius: 14px;
+        background: rgba(17, 36, 64, 0.04);
+        color: #112440;
+        font-weight: 700;
+        padding: 12px 14px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .strategy-option.active {
+        background: linear-gradient(135deg, #1b4d9e, #3a7bd5);
+        color: white;
+        border-color: transparent;
+        box-shadow: 0 12px 24px rgba(33, 92, 194, 0.25);
+      }
+
+      .secondary-button {
+        background: linear-gradient(180deg, #f3f7ff, #e6eefc);
+        border: 1px solid rgba(17, 36, 64, 0.1);
+        color: #112440;
+        border-radius: 12px;
+        padding: 0.9rem 1.2rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .secondary-button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(17, 36, 64, 0.08);
+      }
+
+      .smart-search-results {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 14px;
+        margin-top: 18px;
+      }
+
+      .agenda-slot-card {
+        background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(236,244,255,0.9));
+        border: 1px solid rgba(102, 145, 214, 0.2);
+        border-radius: 18px;
+        padding: 16px 16px 14px;
+        box-shadow: 0 8px 18px rgba(16, 45, 92, 0.06);
+      }
+
+      .agenda-slot-card strong {
+        display: block;
+        font-size: 1rem;
+        margin-bottom: 8px;
+        color: #10264b;
+      }
+
+      .agenda-slot-card small {
+        display: block;
+        color: #49607d;
+        margin: 4px 0;
+      }
+
+      .smart-search-empty {
+        padding: 20px;
+        border-radius: 14px;
+        background: linear-gradient(180deg, rgba(242,247,255,1), rgba(230,237,249,1));
+        color: #49607d;
+        border: 1px solid rgba(81, 112, 160, 0.1);
+      }
+    </style>
   </head>
   <body>
     <div id="auth-shell" class="auth-shell">
@@ -89,6 +188,63 @@
                 <strong>2.4s</strong>
                 <span>Latencia promedio</span>
               </div>
+            </div>
+          </div>
+
+          <div class="panel glass-panel smart-search-panel">
+            <div class="panel-header">
+              <h3>Buscador Inteligente de Agendas</h3>
+              <span id="smart-search-status" class="panel-tag neutral">Listo</span>
+            </div>
+
+            <div class="smart-search-controls">
+              <div class="field-group">
+                <label for="agenda-sede">Sede</label>
+                <select id="agenda-sede">
+                  <option value="Sede Centro">Sede Centro</option>
+                  <option value="Sede Sur">Sede Sur</option>
+                </select>
+              </div>
+
+              <div class="field-group">
+                <label for="agenda-especialidad">Especialidad</label>
+                <select id="agenda-especialidad">
+                  <option value="">Todas</option>
+                  <option>Endodoncia</option>
+                  <option>Ortodoncia</option>
+                  <option>Implantología</option>
+                  <option>Rehabilitación</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="strategy-toggle" aria-label="Estrategia de ordenamiento">
+              <button type="button" class="strategy-option active" data-strategy="nearest">Por Disponibilidad Inmediata</button>
+              <button type="button" class="strategy-option" data-strategy="rating">Por Valoración</button>
+            </div>
+
+            <div class="smart-search-summary">
+              <button id="search-agenda-button" type="button" class="primary-button">Buscar agenda optimizada</button>
+              <button id="undo-filter-button" type="button" class="secondary-button">Deshacer Filtro</button>
+            </div>
+
+            <div class="smart-search-summary" style="margin-top: 18px; width: 100%;">
+              <div class="metric-card accent-blue" style="flex: 1 1 180px; min-width: 180px;">
+                <span class="metric-label">Profundidad de Navegación</span>
+                <strong class="metric-value">2 Clics</strong>
+              </div>
+              <div class="metric-card accent-green" style="flex: 1 1 180px; min-width: 180px;">
+                <span class="metric-label">Tiempo de Filtrado</span>
+                <strong class="metric-value">82 ms</strong>
+              </div>
+              <div class="metric-card accent-navy" style="flex: 1 1 180px; min-width: 180px;">
+                <span class="metric-label">Tasa de Éxito</span>
+                <strong class="metric-value">98.5%</strong>
+              </div>
+            </div>
+
+            <div id="smart-search-results" class="smart-search-results" aria-live="polite">
+              <div class="smart-search-empty">Selecciona sede y especialidad para encontrar la mejor agenda disponible con la estrategia activa.</div>
             </div>
           </div>
 

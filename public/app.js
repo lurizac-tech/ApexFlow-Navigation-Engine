@@ -120,6 +120,151 @@
     }, 2600);
   }
 
+  function updateSmartSearchStatus(label, tone = 'neutral') {
+    const status = document.getElementById('smart-search-status');
+    if (!status) return;
+
+    status.textContent = label;
+    status.className = 'panel-tag';
+    if (tone === 'success') status.classList.add('success');
+    if (tone === 'warning') status.classList.add('warning');
+    if (tone === 'neutral') status.classList.add('neutral');
+  }
+
+  function renderAgendaResults(payload = {}) {
+    const container = document.getElementById('smart-search-results');
+    if (!container) return;
+
+    const blocks = Array.isArray(payload.blocks) ? payload.blocks : [];
+    const strategy = payload.strategy || 'nearest';
+    const processingMs = payload.processingMs ?? 0;
+
+    if (!blocks.length) {
+      container.innerHTML = '<div class="smart-search-empty">No se encontraron bloques para la combinación actual. Intenta cambiar la estrategia o la especialidad.</div>';
+      return;
+    }
+
+    const strategyLabel = strategy === 'rating' ? 'Por Valoración' : 'Por Disponibilidad Inmediata';
+    container.innerHTML = `
+      <div class="smart-search-empty" style="margin-bottom: 12px; background: rgba(26, 92, 196, 0.06); color: #112440; border: 1px solid rgba(26, 92, 196, 0.18);">
+        Estrategia activa: ${strategyLabel} · ${processingMs} ms · ${payload.withinThreshold ? 'cumple el umbral' : 'fuera del umbral'}
+      </div>
+      ${blocks.map((block) => `
+        <article class="agenda-slot-card">
+          <strong>${block.doctor || 'Especialista'}</strong>
+          <small>${block.specialty || 'Especialidad'} · ${block.sede || 'Sede'}</small>
+          <small>${block.start || '09:00'} - ${block.end || '10:00'}</small>
+          <small>Valoración: ${Number(block.rating || 0).toFixed(1)} · ${block.location || 'Ubicación'}</small>
+          <small>Estado: ${block.status || 'available'}</small>
+        </article>
+      `).join('')}
+    `;
+  }
+
+  async function searchOptimizedAgenda() {
+    const sede = document.getElementById('agenda-sede')?.value || 'Sede Centro';
+    const especialidad = document.getElementById('agenda-especialidad')?.value || '';
+    const estrategia = document.querySelector('.strategy-option.active')?.dataset.strategy || 'nearest';
+    const button = document.getElementById('search-agenda-button');
+
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Buscando...';
+    }
+
+    updateSmartSearchStatus('Consultando...', 'warning');
+
+    try {
+      const response = await apiRequest('/api/navigation/search', {
+        method: 'POST',
+        body: JSON.stringify({
+          sede,
+          especialidad,
+          estrategia
+        })
+      });
+
+      renderAgendaResults(response);
+      updateSmartSearchStatus(response.withinThreshold ? 'Optimizado' : 'Procesado', response.withinThreshold ? 'success' : 'warning');
+      appendNodeLog(`[NAV] Search strategy: ${response.strategy} | processing: ${response.processingMs}ms | threshold: ${response.thresholdMs}ms`, response.withinThreshold ? 'success' : 'warning');
+      showToast('Agenda optimizada actualizada.', 'success');
+      return response;
+    } catch (error) {
+      const container = document.getElementById('smart-search-results');
+      if (container) {
+        container.innerHTML = '<div class="smart-search-empty">No fue posible consultar la agenda optimizada. Intenta de nuevo.</div>';
+      }
+      updateSmartSearchStatus('Error de consulta', 'warning');
+      appendNodeLog(`[NAV] Search failed: ${error.message}`, 'warning');
+      showToast(error.message || 'No se pudo consultar la agenda.', 'error');
+      return null;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Buscar agenda optimizada';
+      }
+    }
+  }
+
+  function applyNavigationFiltersFromState(filters = {}) {
+    const sedeEl = document.getElementById('agenda-sede');
+    const specialtyEl = document.getElementById('agenda-especialidad');
+
+    if (sedeEl && filters.sede) {
+      sedeEl.value = filters.sede;
+    }
+
+    if (specialtyEl && filters.especialidad) {
+      specialtyEl.value = filters.especialidad;
+    }
+
+    if (filters.estrategia) {
+      const strategyEl = document.querySelector(`.strategy-option[data-strategy="${String(filters.estrategia).toLowerCase()}"]`);
+      if (strategyEl) {
+        document.querySelectorAll('.strategy-option').forEach((option) => {
+          option.classList.toggle('active', option === strategyEl);
+        });
+      }
+    }
+  }
+
+  async function undoLastFilter() {
+    const button = document.getElementById('undo-filter-button');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Deshaciendo...';
+    }
+
+    try {
+      const response = await apiRequest('/api/navigation/command', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'undo' })
+      });
+
+      applyNavigationFiltersFromState(response.currentFilters || {});
+      if (response.currentFilters && Object.keys(response.currentFilters).length) {
+        await searchOptimizedAgenda();
+      } else {
+        renderAgendaResults({ blocks: [], strategy: 'nearest', processingMs: 0, withinThreshold: true });
+      }
+
+      updateSmartSearchStatus('Filtro revertido', 'success');
+      appendNodeLog('[NAV] Undo executed and filter history reverted.', 'success');
+      showToast('Último filtro deshecho correctamente.', 'success');
+      return response;
+    } catch (error) {
+      updateSmartSearchStatus('Nada por deshacer', 'warning');
+      appendNodeLog(`[NAV] Undo failed: ${error.message}`, 'warning');
+      showToast(error.message || 'No había un filtro para deshacer.', 'error');
+      return null;
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Deshacer Filtro';
+      }
+    }
+  }
+
   function ensureConsoleStyles() {
     if (document.getElementById('apexflow-node-console-style')) return;
 
@@ -395,6 +540,26 @@
     if (benchmarkButton) {
       benchmarkButton.addEventListener('click', runLoadTest);
     }
+
+    const smartSearchButton = document.getElementById('search-agenda-button');
+    if (smartSearchButton) {
+      smartSearchButton.addEventListener('click', searchOptimizedAgenda);
+    }
+
+    const undoFilterButton = document.getElementById('undo-filter-button');
+    if (undoFilterButton) {
+      undoFilterButton.addEventListener('click', undoLastFilter);
+    }
+
+    document.querySelectorAll('.strategy-option').forEach((button) => {
+      button.addEventListener('click', () => {
+        document.querySelectorAll('.strategy-option').forEach((option) => {
+          option.classList.toggle('active', option === button);
+        });
+        const strategy = button.dataset.strategy || 'nearest';
+        updateSmartSearchStatus(strategy === 'rating' ? 'Valoración' : 'Disponibilidad', 'neutral');
+      });
+    });
 
     const loginForm = document.getElementById('login-form');
     if (loginForm) {

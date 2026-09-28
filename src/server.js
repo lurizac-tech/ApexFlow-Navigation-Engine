@@ -22,13 +22,56 @@ const serviceInfo = {
   timestamp: new Date().toISOString()
 };
 
-const users = new Map([
+const fallbackUsers = [
   ['admin@apexflow.com', { id: 'usr_admin_01', name: 'Admin ApexFlow', email: 'admin@apexflow.com', password: 'admin123', role: 'admin' }],
   ['paciente@apexflow.com', { id: 'usr_patient_01', name: 'Paciente Demo', email: 'paciente@apexflow.com', password: 'paciente123', role: 'patient' }],
   ['dentista@apexflow.com', { id: 'usr_dentist_01', name: 'Dra. Ana Gómez', email: 'dentista@apexflow.com', password: 'dentista123', role: 'dentist' }]
-]);
+];
+
+const users = new Map(fallbackUsers);
 
 const appointments = new Map();
+
+function seedFallbackUsers() {
+  users.clear();
+  fallbackUsers.forEach(([email, user]) => {
+    users.set(String(email).toLowerCase(), user);
+  });
+}
+
+function seedFallbackAppointments() {
+  appointments.clear();
+  const demoAppointments = [
+    {
+      id: 'apt_demo_001',
+      patientId: 'usr_patient_01',
+      patientName: 'Paciente Demo',
+      doctor: 'Dra. Ana Gómez',
+      specialty: 'Ortodoncia',
+      date: '2026-09-28',
+      time: '09:00',
+      reason: 'Control preventivo',
+      status: 'confirmed',
+      createdAt: new Date().toISOString()
+    },
+    {
+      id: 'apt_demo_002',
+      patientId: 'usr_patient_01',
+      patientName: 'Paciente Demo',
+      doctor: 'Dr. Javier Torres',
+      specialty: 'Implantología',
+      date: '2026-09-28',
+      time: '10:30',
+      reason: 'Valoración inicial',
+      status: 'confirmed',
+      createdAt: new Date().toISOString()
+    }
+  ];
+
+  demoAppointments.forEach((appointment) => {
+    appointments.set(appointment.id, appointment);
+  });
+}
 const notificationQueue = [];
 const resourceLocks = new Map();
 const nodeMetrics = {
@@ -592,42 +635,62 @@ async function withLock(lockKey, callback) {
 }
 
 async function hydrateUsersFromDb() {
-  const rows = await all('SELECT * FROM users ORDER BY id');
-  users.clear();
-  rows.forEach((row) => {
-    users.set(String(row.email).toLowerCase(), {
-      id: String(row.id),
-      name: row.name,
-      email: row.email,
-      password: row.password,
-      role: row.role
+  try {
+    const rows = await all('SELECT * FROM users ORDER BY id');
+    users.clear();
+    rows.forEach((row) => {
+      users.set(String(row.email).toLowerCase(), {
+        id: String(row.id),
+        name: row.name,
+        email: row.email,
+        password: row.password,
+        role: row.role
+      });
     });
-  });
+    return;
+  } catch (error) {
+    console.warn('Database unavailable while hydrating users; using fallback credentials.', error.message);
+    seedFallbackUsers();
+  }
 }
 
 async function hydrateAppointmentsFromDb() {
-  const rows = await all('SELECT * FROM citas ORDER BY fecha, hora');
-  appointments.clear();
-  rows.forEach((row) => {
-    appointments.set(String(row.id), {
-      id: String(row.id),
-      patientId: row.paciente_id ? String(row.paciente_id) : null,
-      patientName: row.paciente_nombre,
-      doctor: row.odontologo,
-      specialty: row.especialidad,
-      date: row.fecha,
-      time: row.hora,
-      reason: row.motivo || 'Consulta general',
-      status: row.estado || 'confirmed',
-      createdAt: new Date().toISOString()
+  try {
+    const rows = await all('SELECT * FROM citas ORDER BY fecha, hora');
+    appointments.clear();
+    rows.forEach((row) => {
+      appointments.set(String(row.id), {
+        id: String(row.id),
+        patientId: row.paciente_id ? String(row.paciente_id) : null,
+        patientName: row.paciente_nombre,
+        doctor: row.odontologo,
+        specialty: row.especialidad,
+        date: row.fecha,
+        time: row.hora,
+        reason: row.motivo || 'Consulta general',
+        status: row.estado || 'confirmed',
+        createdAt: new Date().toISOString()
+      });
     });
-  });
+    return;
+  } catch (error) {
+    console.warn('Database unavailable while hydrating appointments; using fallback schedule.', error.message);
+    seedFallbackAppointments();
+  }
 }
 
 async function ensureDbState() {
-  await initDatabase();
-  await hydrateUsersFromDb();
-  await hydrateAppointmentsFromDb();
+  try {
+    await initDatabase();
+    await hydrateUsersFromDb();
+    await hydrateAppointmentsFromDb();
+    return true;
+  } catch (error) {
+    console.warn('PostgreSQL unreachable; activating in-memory demo mode.', error.message);
+    seedFallbackUsers();
+    seedFallbackAppointments();
+    return false;
+  }
 }
 
 function getDoctorAvailability(doctor, date) {
