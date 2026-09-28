@@ -211,6 +211,129 @@ function searchDoctorsByStrategy(candidates, strategyName = 'nearest', context =
   return engine.search(normalized, context);
 }
 
+class CompositeNode {
+  constructor(name, type, metadata = {}) {
+    this.name = name;
+    this.type = type;
+    this.metadata = metadata;
+    this.children = [];
+  }
+
+  add(child) {
+    this.children.push(child);
+    return child;
+  }
+
+  remove(child) {
+    this.children = this.children.filter((item) => item !== child);
+    return this;
+  }
+
+  toJSON() {
+    return {
+      name: this.name,
+      type: this.type,
+      metadata: this.metadata,
+      children: this.children.map((child) => child.toJSON())
+    };
+  }
+}
+
+class SedeNode extends CompositeNode {
+  constructor(name, metadata = {}) {
+    super(name, 'sede', metadata);
+  }
+}
+
+class EspecialidadNode extends CompositeNode {
+  constructor(name, metadata = {}) {
+    super(name, 'especialidad', metadata);
+  }
+}
+
+class DoctorNode extends CompositeNode {
+  constructor(name, metadata = {}) {
+    super(name, 'doctor', metadata);
+  }
+}
+
+class BloqueNode extends CompositeNode {
+  constructor(name, metadata = {}) {
+    super(name, 'bloque', metadata);
+  }
+}
+
+class InMemoryIterator {
+  constructor(root) {
+    this.stack = [root];
+    this.visited = [];
+    this._traverse();
+    this.index = 0;
+  }
+
+  _traverse() {
+    const stack = [this.stack[0]];
+    while (stack.length) {
+      const current = stack.pop();
+      this.visited.push(current);
+      for (let i = current.children.length - 1; i >= 0; i -= 1) {
+        stack.push(current.children[i]);
+      }
+    }
+  }
+
+  hasNext() {
+    return this.index < this.visited.length;
+  }
+
+  next() {
+    if (!this.hasNext()) return null;
+    const current = this.visited[this.index];
+    this.index += 1;
+    return current;
+  }
+
+  toArray() {
+    return [...this.visited];
+  }
+}
+
+function buildClinicCompositeTree() {
+  const sedeCentro = new SedeNode('Sede Centro', { city: 'Bogotá', region: 'Norte' });
+  const especialidadOrtodoncia = new EspecialidadNode('Ortodoncia', { priority: 'high' });
+  const doctorAna = new DoctorNode('Dra. Ana Gómez', { rating: 4.9, specialty: 'Ortodoncia' });
+  doctorAna.add(new BloqueNode('Bloque A', { start: '09:00', end: '10:00', status: 'available' }));
+  doctorAna.add(new BloqueNode('Bloque B', { start: '10:30', end: '11:30', status: 'reserved' }));
+  especialidadOrtodoncia.add(doctorAna);
+
+  const especialidadImplantologia = new EspecialidadNode('Implantología', { priority: 'medium' });
+  const doctorJavier = new DoctorNode('Dr. Javier Torres', { rating: 4.7, specialty: 'Implantología' });
+  doctorJavier.add(new BloqueNode('Bloque C', { start: '11:00', end: '12:00', status: 'available' }));
+  doctorJavier.add(new BloqueNode('Bloque D', { start: '12:30', end: '13:30', status: 'available' }));
+  especialidadImplantologia.add(doctorJavier);
+
+  sedeCentro.add(especialidadOrtodoncia);
+  sedeCentro.add(especialidadImplantologia);
+
+  const sedeSur = new SedeNode('Sede Sur', { city: 'Medellín', region: 'Sur' });
+  const especialidadEndodoncia = new EspecialidadNode('Endodoncia', { priority: 'high' });
+  const doctorSofia = new DoctorNode('Dra. Sofía Ramírez', { rating: 4.8, specialty: 'Endodoncia' });
+  doctorSofia.add(new BloqueNode('Bloque E', { start: '09:30', end: '10:30', status: 'available' }));
+  especialidadEndodoncia.add(doctorSofia);
+  sedeSur.add(especialidadEndodoncia);
+
+  return { sedeCentro, sedeSur };
+}
+
+function flattenClinicTree(root) {
+  const iterator = new InMemoryIterator(root);
+  return iterator.toArray().map((node) => ({
+    type: node.type,
+    name: node.name,
+    metadata: node.metadata
+  }));
+}
+
 function uid(prefix) {
   return `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(16)}`;
 }
@@ -651,6 +774,27 @@ app.post('/api/navigation/search', verificarJWT, (req, res) => {
   });
 });
 
+app.get('/api/navigation/tree', verificarJWT, (req, res) => {
+  const { sede } = req.query;
+  const clinicTree = buildClinicCompositeTree();
+  const rootNodes = [clinicTree.sedeCentro, clinicTree.sedeSur];
+  const selectedRoot = rootNodes.find((node) => node.name.toLowerCase() === String(sede || '').trim().toLowerCase()) || rootNodes[0];
+  const iterator = new InMemoryIterator(selectedRoot);
+
+  return res.json({
+    ok: true,
+    pattern: 'Composite + Iterator',
+    selectedSede: selectedRoot.name,
+    tree: selectedRoot.toJSON(),
+    traversal: iterator.toArray().map((node) => ({
+      type: node.type,
+      name: node.name,
+      metadata: node.metadata
+    })),
+    flattened: flattenClinicTree(selectedRoot)
+  });
+});
+
 // RNFD-02: este endpoint simula un escenario de carga distribuida en el gateway
 // y en el servicio de citas para medir latencia real, tolerancia a picos y tasa de éxito.
 app.post('/api/load-test', verificarJWT, (req, res) => {
@@ -747,5 +891,13 @@ module.exports = {
   NavigationEngine,
   navigationEngine,
   searchDoctorsByStrategy,
-  doctorCatalog
+  doctorCatalog,
+  CompositeNode,
+  SedeNode,
+  EspecialidadNode,
+  DoctorNode,
+  BloqueNode,
+  InMemoryIterator,
+  buildClinicCompositeTree,
+  flattenClinicTree
 };
