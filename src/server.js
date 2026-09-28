@@ -407,6 +407,137 @@ function searchOptimizedBlocks({ sede, especialidad, estrategia }) {
   }));
 }
 
+class NavigationCommand {
+  constructor(state) {
+    this.state = state;
+  }
+
+  execute() {
+    throw new Error('El comando debe implementar execute().');
+  }
+
+  undo() {
+    throw new Error('El comando debe implementar undo().');
+  }
+}
+
+class ApplyFilterCommand extends NavigationCommand {
+  constructor(state, filters = {}) {
+    super(state);
+    this.filters = { ...filters };
+    this.previousState = { ...state.currentFilters };
+  }
+
+  execute() {
+    const snapshot = { ...this.state.currentFilters };
+    this.state.currentFilters = { ...snapshot, ...this.filters };
+    this.state.history.push({
+      id: uid('navcmd'),
+      type: 'apply-filter',
+      filters: { ...this.state.currentFilters },
+      executedAt: new Date().toISOString()
+    });
+    this.state.undoStack.push(this);
+    return { ...this.state.currentFilters };
+  }
+
+  undo() {
+    this.state.currentFilters = { ...this.previousState };
+    this.state.history.push({
+      id: uid('navundo'),
+      type: 'undo-filter',
+      previousFilters: { ...this.previousState },
+      undoneFilters: { ...this.filters },
+      executedAt: new Date().toISOString()
+    });
+    return { ...this.state.currentFilters };
+  }
+}
+
+class ResetFilterCommand extends NavigationCommand {
+  constructor(state) {
+    super(state);
+    this.previousState = { ...state.currentFilters };
+  }
+
+  execute() {
+    this.state.currentFilters = {};
+    this.state.history.push({
+      id: uid('navreset'),
+      type: 'reset-filters',
+      filters: {},
+      executedAt: new Date().toISOString()
+    });
+    this.state.undoStack.push(this);
+    return { ...this.state.currentFilters };
+  }
+
+  undo() {
+    this.state.currentFilters = { ...this.previousState };
+    this.state.history.push({
+      id: uid('navundoreset'),
+      type: 'undo-reset-filters',
+      previousFilters: { ...this.previousState },
+      executedAt: new Date().toISOString()
+    });
+    return { ...this.state.currentFilters };
+  }
+}
+
+const navigationCommandState = {
+  currentFilters: {},
+  history: [],
+  undoStack: []
+};
+
+function executeNavigationCommand(body = {}) {
+  const action = String(body.action || 'apply').toLowerCase();
+  const filters = body.filters || body || {};
+
+  if (action === 'undo') {
+    const lastCommand = navigationCommandState.undoStack.pop();
+    if (!lastCommand) {
+      return {
+        ok: true,
+        action: 'undo',
+        message: 'No hay acciones para deshacer.',
+        currentFilters: { ...navigationCommandState.currentFilters },
+        history: [...navigationCommandState.history]
+      };
+    }
+
+    const restored = lastCommand.undo();
+    return {
+      ok: true,
+      action: 'undo',
+      currentFilters: restored,
+      history: [...navigationCommandState.history],
+      undoneCommand: lastCommand.constructor.name
+    };
+  }
+
+  if (action === 'reset') {
+    const command = new ResetFilterCommand(navigationCommandState);
+    const current = command.execute();
+    return {
+      ok: true,
+      action: 'reset',
+      currentFilters: current,
+      history: [...navigationCommandState.history]
+    };
+  }
+
+  const command = new ApplyFilterCommand(navigationCommandState, filters);
+  const current = command.execute();
+  return {
+    ok: true,
+    action: 'apply',
+    currentFilters: current,
+    history: [...navigationCommandState.history],
+    canUndo: navigationCommandState.undoStack.length > 0
+  };
+}
+
 function uid(prefix) {
   return `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(16)}`;
 }
@@ -872,6 +1003,17 @@ app.get('/api/navigation/tree', verificarJWT, (req, res) => {
   });
 });
 
+app.post('/api/navigation/command', verificarJWT, (req, res) => {
+  const payload = req.body || {};
+  const result = executeNavigationCommand(payload);
+
+  return res.json({
+    ok: true,
+    ...result,
+    history: navigationCommandState.history.slice(-10)
+  });
+});
+
 // RNFD-02: este endpoint simula un escenario de carga distribuida en el gateway
 // y en el servicio de citas para medir latencia real, tolerancia a picos y tasa de éxito.
 app.post('/api/load-test', verificarJWT, (req, res) => {
@@ -977,5 +1119,10 @@ module.exports = {
   InMemoryIterator,
   buildClinicCompositeTree,
   flattenClinicTree,
-  searchOptimizedBlocks
+  searchOptimizedBlocks,
+  NavigationCommand,
+  ApplyFilterCommand,
+  ResetFilterCommand,
+  navigationCommandState,
+  executeNavigationCommand
 };
