@@ -49,6 +49,168 @@ const availabilityByDoctor = {
   'Dra. Sofía Ramírez': ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00']
 };
 
+const doctorCatalog = [
+  { id: 'doc_ana', doctor: 'Dra. Ana Gómez', specialty: 'Ortodoncia', rating: 4.9, location: 'Centro Norte' },
+  { id: 'doc_javier', doctor: 'Dr. Javier Torres', specialty: 'Implantología', rating: 4.7, location: 'Sede Sur' },
+  { id: 'doc_sofia', doctor: 'Dra. Sofía Ramírez', specialty: 'Endodoncia', rating: 4.8, location: 'Centro' }
+];
+
+class SearchStrategy {
+  sortCandidates(candidates, context = {}) {
+    throw new Error('La estrategia debe implementar sortCandidates().');
+  }
+}
+
+class NearestAvailabilityStrategy extends SearchStrategy {
+  constructor() {
+    super();
+    this.name = 'nearest-availability';
+  }
+
+  toMinutes(value) {
+    if (value === null || value === undefined || value === '') return Number.MAX_SAFE_INTEGER;
+    if (typeof value === 'number') return value;
+
+    const match = String(value).match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return Number.MAX_SAFE_INTEGER;
+
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    return hours * 60 + minutes;
+  }
+
+  getNearestGap(candidate, requestedTime) {
+    const available = Array.isArray(candidate.availableSlots)
+      ? candidate.availableSlots
+      : Array.isArray(candidate.availability)
+        ? candidate.availability
+        : [];
+
+    if (!available.length) return Number.MAX_SAFE_INTEGER;
+
+    const target = this.toMinutes(requestedTime || '09:00');
+
+    return available.reduce((closest, slot) => {
+      const slotMinutes = this.toMinutes(slot);
+      const distance = Math.abs(slotMinutes - target);
+      return Math.min(closest, distance);
+    }, Number.MAX_SAFE_INTEGER);
+  }
+
+  sortCandidates(candidates, context = {}) {
+    const requestedTime = context.time || '09:00';
+
+    return [...candidates].sort((left, right) => {
+      const leftGap = this.getNearestGap(left, requestedTime);
+      const rightGap = this.getNearestGap(right, requestedTime);
+
+      if (leftGap !== rightGap) {
+        return leftGap - rightGap;
+      }
+
+      const leftRating = Number(left.rating || 0);
+      const rightRating = Number(right.rating || 0);
+      return rightRating - leftRating;
+    });
+  }
+}
+
+class DoctorRatingStrategy extends SearchStrategy {
+  constructor() {
+    super();
+    this.name = 'doctor-rating';
+  }
+
+  matchesSpecialty(candidate, requestedSpecialty) {
+    if (!requestedSpecialty) return true;
+    const specialties = [candidate.specialty, candidate.especialidad, candidate.area, candidate.specialtyName];
+    const normalized = String(requestedSpecialty).trim().toLowerCase();
+
+    return specialties.some((specialty) => {
+      if (!specialty) return false;
+      return String(specialty).trim().toLowerCase().includes(normalized);
+    });
+  }
+
+  sortCandidates(candidates, context = {}) {
+    const requestedSpecialty = String(context.specialty || '').trim();
+
+    return [...candidates].sort((left, right) => {
+      const leftMatch = this.matchesSpecialty(left, requestedSpecialty) ? 1 : 0;
+      const rightMatch = this.matchesSpecialty(right, requestedSpecialty) ? 1 : 0;
+
+      if (leftMatch !== rightMatch) {
+        return rightMatch - leftMatch;
+      }
+
+      const leftRating = Number(left.rating || 0);
+      const rightRating = Number(right.rating || 0);
+
+      if (leftRating !== rightRating) {
+        return rightRating - leftRating;
+      }
+
+      return String(left.doctor || left.name || '').localeCompare(String(right.doctor || right.name || ''));
+    });
+  }
+}
+
+class NavigationEngine {
+  constructor(strategy = new NearestAvailabilityStrategy()) {
+    this.strategy = strategy;
+  }
+
+  setStrategy(strategy) {
+    this.strategy = strategy;
+    return this;
+  }
+
+  search(candidates, context = {}) {
+    if (!this.strategy || typeof this.strategy.sortCandidates !== 'function') {
+      throw new Error('Debe proporcionar una estrategia válida para buscar candidatos.');
+    }
+
+    return this.strategy.sortCandidates(candidates, context);
+  }
+}
+
+function normalizeDoctorCandidate(doctor, preference = {}) {
+  const date = preference.date || new Date().toISOString().slice(0, 10);
+  const doctorName = doctor.doctor || doctor.name || doctor.doctorName || 'Doctor';
+  const specialty = preference.specialty || doctor.specialty || doctor.especialidad || doctor.area || '';
+  const availability = Array.isArray(doctor.availableSlots)
+    ? doctor.availableSlots
+    : Array.isArray(doctor.availability)
+      ? doctor.availability
+      : getDoctorAvailability(doctorName, date);
+
+  return {
+    id: doctor.id || doctorName,
+    doctor: doctorName,
+    name: doctorName,
+    specialty,
+    rating: Number(doctor.rating || 4.5),
+    availableSlots: availability,
+    nextAvailable: availability[0] || null,
+    location: doctor.location || 'Sede principal'
+  };
+}
+
+function searchDoctorsByStrategy(candidates, strategyName = 'nearest', context = {}) {
+  const normalized = Array.isArray(candidates) ? candidates.map((candidate) => normalizeDoctorCandidate(candidate, context)) : [];
+  const strategyMap = {
+    nearest: new NearestAvailabilityStrategy(),
+    nearestavailability: new NearestAvailabilityStrategy(),
+    doctorrating: new DoctorRatingStrategy(),
+    'doctor-rating': new DoctorRatingStrategy(),
+    rating: new DoctorRatingStrategy()
+  };
+
+  const strategy = strategyMap[String(strategyName || 'nearest').toLowerCase()] || new NearestAvailabilityStrategy();
+  const engine = new NavigationEngine(strategy);
+  return engine.search(normalized, context);
+}
+
 function uid(prefix) {
   return `${prefix}_${crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(16)}`;
 }
@@ -164,6 +326,8 @@ function buildAppointmentPayload(appointment) {
     createdAt: appointment.createdAt
   };
 }
+
+const navigationEngine = new NavigationEngine(new NearestAvailabilityStrategy());
 
 // RNFD-02: estas funciones modelan la observabilidad del sistema distribuido.
 // El gateway central mide latencia, rendimiento y estado del nodo, mientras que
@@ -463,6 +627,30 @@ app.get('/api/jobs', verificarJWT, (req, res) => {
   return res.json({ ok: true, jobs: getJobStats() });
 });
 
+app.post('/api/navigation/search', verificarJWT, (req, res) => {
+  const { doctors, specialty, date, time, strategy } = req.body || {};
+  const requestedStrategy = String(strategy || 'nearest').toLowerCase();
+  const candidateDoctors = Array.isArray(doctors) && doctors.length
+    ? doctors
+    : doctorCatalog.map((doctor) => ({ ...doctor, specialty: specialty || doctor.specialty, date, time }));
+
+  const results = searchDoctorsByStrategy(candidateDoctors, requestedStrategy, { specialty, date, time });
+
+  return res.json({
+    ok: true,
+    strategy: requestedStrategy,
+    results: results.map((doctor) => ({
+      id: doctor.id,
+      doctor: doctor.doctor,
+      specialty: doctor.specialty,
+      rating: doctor.rating,
+      availableSlots: doctor.availableSlots,
+      nextAvailable: doctor.nextAvailable,
+      location: doctor.location
+    }))
+  });
+});
+
 // RNFD-02: este endpoint simula un escenario de carga distribuida en el gateway
 // y en el servicio de citas para medir latencia real, tolerancia a picos y tasa de éxito.
 app.post('/api/load-test', verificarJWT, (req, res) => {
@@ -546,4 +734,18 @@ if (require.main === module) {
   startServer();
 }
 
-module.exports = { app, users, appointments, getDoctorAvailability, withLock, verifyJWT: verificarJWT };
+module.exports = {
+  app,
+  users,
+  appointments,
+  getDoctorAvailability,
+  withLock,
+  verifyJWT: verificarJWT,
+  SearchStrategy,
+  NearestAvailabilityStrategy,
+  DoctorRatingStrategy,
+  NavigationEngine,
+  navigationEngine,
+  searchDoctorsByStrategy,
+  doctorCatalog
+};
