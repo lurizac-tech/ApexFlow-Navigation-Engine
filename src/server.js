@@ -1,13 +1,13 @@
+const dotenv = require('dotenv');
+dotenv.config();
+
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const crypto = require('crypto');
-const dotenv = require('dotenv');
 const { initDatabase, findUserByEmail, all, db } = require('./db');
 const { enqueueJob, startWorker, getJobStats, activeWorkers } = require('./worker');
-
-dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -72,6 +72,7 @@ function seedFallbackAppointments() {
     appointments.set(appointment.id, appointment);
   });
 }
+let databaseAvailable = null;
 const notificationQueue = [];
 const resourceLocks = new Map();
 const nodeMetrics = {
@@ -683,7 +684,6 @@ async function ensureDbState() {
   try {
     await initDatabase();
     await hydrateUsersFromDb();
-    await hydrateAppointmentsFromDb();
     return true;
   } catch (error) {
     console.warn('PostgreSQL unreachable; activating in-memory demo mode.', error.message);
@@ -799,12 +799,24 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
+app.get('/health', async (req, res) => {
+  let databaseConnected = false;
+
+  try {
+    await db.query('SELECT 1');
+    databaseConnected = true;
+  } catch (error) {
+    console.warn('Health check could not reach PostgreSQL:', error.message);
+  }
+
+  const healthy = databaseConnected || process.env.NODE_ENV !== 'production';
+
+  res.status(healthy ? 200 : 503).json({
+    ok: healthy,
     service: 'api-gateway',
     node: 'gateway-citas',
-    status: 'healthy',
+    status: healthy ? 'healthy' : 'degraded',
+    database: databaseConnected ? 'connected' : 'disconnected',
     info: serviceInfo,
     jobs: getJobStats(),
     timestamp: new Date().toISOString()
@@ -869,7 +881,7 @@ app.get('/api/citas/disponibilidad', verificarJWT, async (req, res) => {
   }
 
   try {
-    await hydrateAppointmentsFromDb();
+    await ensureDbState();
     const slots = getDoctorAvailability(String(doctor), String(date));
 
     return res.json({ ok: true, doctor: String(doctor), date: String(date), slots });
@@ -898,7 +910,7 @@ app.post('/api/citas', verificarJWT, async (req, res) => {
   const { doctor, date, time, specialty, reason } = req.body || {};
 
   try {
-    await ensureDbState();
+    const databaseReady = await ensureDbState();
     const patient = Array.from(users.values()).find((item) => item.email === req.user.email) || await findUserByEmail(String(req.user.email).toLowerCase());
 
     if (!patient) {
@@ -923,7 +935,7 @@ app.post('/api/citas', verificarJWT, async (req, res) => {
       }
 
       const appointment = {
-        id: uid('apt'),
+        id: null,
         patientId: String(patient.id),
         patientName: patient.name,
         doctor,
@@ -935,11 +947,17 @@ app.post('/api/citas', verificarJWT, async (req, res) => {
         createdAt: new Date().toISOString()
       };
 
-      await db.query(
-        `INSERT INTO citas (paciente_id, paciente_nombre, odontologo, especialidad, fecha, hora, motivo, estado)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [Number(appointment.patientId) || 0, appointment.patientName, appointment.doctor, appointment.specialty, appointment.date, appointment.time, appointment.reason, appointment.status]
-      );
+      if (databaseReady) {
+        const result = await db.query(
+          `INSERT INTO citas (paciente_id, paciente_nombre, odontologo, especialidad, fecha, hora, motivo, estado)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING id`,
+          [Number(appointment.patientId) || 0, appointment.patientName, appointment.doctor, appointment.specialty, appointment.date, appointment.time, appointment.reason, appointment.status]
+        );
+        appointment.id = String(result.rows[0].id);
+      } else {
+        appointment.id = uid('apt');
+      }
 
       appointments.set(appointment.id, appointment);
 
@@ -977,7 +995,7 @@ app.patch('/api/citas/:id/cancelar', verificarJWT, async (req, res) => {
   const { id } = req.params;
 
   try {
-    await hydrateAppointmentsFromDb();
+    const databaseReady = await ensureDbState();
     const appointment = appointments.get(id);
 
     if (!appointment) {
@@ -988,8 +1006,10 @@ app.patch('/api/citas/:id/cancelar', verificarJWT, async (req, res) => {
       return res.status(403).json({ ok: false, message: 'No tienes permiso para cancelar esta cita.' });
     }
 
+    if (databaseReady) {
+      await db.query('UPDATE citas SET estado = $1 WHERE id = $2', ['cancelled', Number(id)]);
+    }
     appointment.status = 'cancelled';
-    await db.query('UPDATE citas SET estado = $1 WHERE id = $2', ['cancelled', Number(id)]);
 
     enqueueJob({
       id: `job_cancel_${appointment.id}`,
@@ -1136,19 +1156,33 @@ app.use((error, req, res, next) => {
   return res.status(500).json({ ok: false, message: 'Error interno del servidor.' });
 });
 
-startWorker({ pollIntervalMs: 800 });
-
 async function startServer() {
   try {
-    await ensureDbState();
+    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET must be configured in production.');
+    }
+
+    const databaseReady = await ensureDbState();
+    if (!databaseReady && process.env.NODE_ENV === 'production') {
+      throw new Error('PostgreSQL is required in production; server startup aborted.');
+    }
+
+    startWorker({ pollIntervalMs: 800 });
     app.listen(PORT, () => {
       console.log(`ApexFlow Distributed API Gateway running on http://localhost:${PORT}`);
       console.log('JWT secret configured:', JWT_SECRET ? 'yes' : 'no');
-      console.log('Database connected:', Boolean(process.env.DATABASE_URL));
+      console.log('Database connected:', databaseReady);
     });
   } catch (error) {
     console.error('Database boot error:', error);
-    console.error('Falling back to in-memory mode, but Neon persistence is not active.');
+    if (process.env.NODE_ENV === 'production') {
+      await db.end();
+      process.exitCode = 1;
+      return;
+    }
+
+    console.error('Falling back to in-memory demo mode.');
+    startWorker({ pollIntervalMs: 800 });
     app.listen(PORT, () => {
       console.log(`ApexFlow Distributed API Gateway running on http://localhost:${PORT}`);
       console.log('JWT secret configured:', JWT_SECRET ? 'yes' : 'no');

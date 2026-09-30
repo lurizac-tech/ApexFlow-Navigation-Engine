@@ -4,17 +4,16 @@ services:
     env: node
     plan: free
     region: oregon
-    buildCommand: npm install
+    buildCommand: npm ci --omit=dev
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
       - key: JWT_SECRET
-        value: apexflow-secret-demo
+        generateValue: true
       - key: JWT_EXPIRES_IN
         value: 8h
       - key: DATABASE_URL
-        value: postgresql://neondb_owner:npg_oi6xm4nIYTQH@ep-long-bar-arv0pmbh-pooler.c-4.us-west-2.aws.neon.tech/neondb?sslmode=require
+        sync: false
+

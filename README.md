@@ -45,15 +45,15 @@ Cloud / Render
 
 ### Despliegue cloud
 
-La configuración `render.yaml` define un servicio web de Render con:
+La configuración `render.yaml` define un servicio web y una instancia PostgreSQL de Render. Al crear el Blueprint, Render enlaza la base mediante `DATABASE_URL` y genera `JWT_SECRET`; no es necesario guardar credenciales de producción en el repositorio.
 
-- comando de build: `npm install`
+- comando de build: `npm ci --omit=dev`
 - comando de inicio: `npm start`
 - health check: `/health`
-- puerto dinámico: `PORT`
-- variables de entorno: `NODE_ENV`, `PORT`, `JWT_SECRET`, `JWT_EXPIRES_IN`
+- PostgreSQL administrado, inicialización automática de tablas y datos demo
+- variables de entorno: `NODE_ENV`, `JWT_SECRET`, `JWT_EXPIRES_IN` y `DATABASE_URL`
 
-Esto permite desplegar la API de forma simple en un entorno de producción, manteniendo la misma lógica local y cloud.
+Render proporciona `PORT` automáticamente. En producción, la aplicación no inicia si PostgreSQL o `JWT_SECRET` no están disponibles, y `/health` devuelve HTTP 503 si la base deja de responder. Para desplegar, conecta el repositorio en Render y crea los recursos definidos en el Blueprint `render.yaml`.
 
 ## 2. Requisitos
 
@@ -75,6 +75,8 @@ Instala dependencias:
 ```bash
 npm install
 ```
+
+Para usar PostgreSQL local, copia `.env.example` a `.env` y adapta `DATABASE_URL`, `JWT_SECRET` y `PORT` a tu entorno.
 
 Ejecuta la aplicación:
 
