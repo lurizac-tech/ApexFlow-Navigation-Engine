@@ -129,6 +129,34 @@ async function ensureSeedAppointments() {
   }
 }
 
+async function ensureSeedHistory() {
+  const count = await get('SELECT COUNT(*)::int AS total FROM historial');
+  if (count && count.total >= 5) {
+    return;
+  }
+
+  const patients = await all("SELECT id, name FROM users WHERE role = 'patient' ORDER BY id LIMIT 3");
+  const dentists = await all("SELECT id, name FROM users WHERE role = 'dentist' ORDER BY id LIMIT 3");
+
+  if (patients.length < 1 || dentists.length < 1) return;
+
+  const sampleHistory = [
+    { paciente: patients[0].name, paciente_id: patients[0].id, odontologo: dentists[0].name, odontologo_id: dentists[0].id, diagnostico: 'Gingivitis leve', observaciones: 'Se recomienda limpieza profunda y cambio de técnica de cepillado.' },
+    { paciente: patients[1].name, paciente_id: patients[1].id, odontologo: dentists[1].name, odontologo_id: dentists[1].id, diagnostico: 'Caries en molar 36', observaciones: 'Se realiza obturación con resina. Próxima cita para control en 6 meses.' },
+    { paciente: patients[2].name, paciente_id: patients[2].id, odontologo: dentists[2].name, odontologo_id: dentists[2].id, diagnostico: 'Maloclusión Clase I', observaciones: 'Inicio de tratamiento de ortodoncia. Se instalan brackets superiores.' },
+    { paciente: patients[0].name, paciente_id: patients[0].id, odontologo: dentists[1].name, odontologo_id: dentists[1].id, diagnostico: 'Extracción de cordal 48', observaciones: 'Cirugía sin complicaciones. Se receta analgésicos.' },
+    { paciente: patients[1].name, paciente_id: patients[1].id, odontologo: dentists[0].name, odontologo_id: dentists[0].id, diagnostico: 'Blanqueamiento dental', observaciones: 'Se completa primera sesión. Sensibilidad dental leve reportada.' }
+  ];
+
+  for (const item of sampleHistory) {
+    await db.query(
+      `INSERT INTO historial (paciente, paciente_id, odontologo, odontologo_id, diagnostico, observaciones)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [item.paciente, item.paciente_id, item.odontologo, item.odontologo_id, item.diagnostico, item.observaciones]
+    );
+  }
+}
+
 async function initDatabase() {
   await db.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -169,6 +197,7 @@ async function initDatabase() {
 
   await ensureSeedUsers();
   await ensureSeedAppointments();
+  await ensureSeedHistory();
 }
 
 async function findUserByEmail(email) {
